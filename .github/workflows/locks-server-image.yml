@@ -4,6 +4,13 @@ name: Lock Server image
 # workflow_dispatch from master; the digest comes from the buildx push metadata
 # and is uploaded as publish-evidence.json. Rollback is Railway's deployment
 # rollback, which keeps the exact previous image; no rollback image is built here.
+#
+# A dispatch may set locks_rev (and locks_repo, the fork or upstream pubky/locks)
+# to build another Locks revision without moving the Dockerfile's default pin,
+# which is the shared Lock Server's.
+# An image built that way is for a Lock Server with its own database: Locks
+# revisions do not share a migration history (the default pin and v0.1.0-rc10
+# both have 0010 and 0011, with different contents).
 
 on:
   push:
@@ -15,6 +22,15 @@ on:
       - locks-server/**
       - .github/workflows/locks-server-image.yml
   workflow_dispatch:
+    inputs:
+      locks_rev:
+        description: Full 40-character Locks commit to build instead of the Dockerfile's LOCKS_REV (empty builds the default pin)
+        required: false
+        default: ''
+      locks_repo:
+        description: Repository locks_rev is cloned from, https://github.com/BitcoinErrorLog/locks.git or https://github.com/pubky/locks.git (empty keeps the Dockerfile's LOCKS_REPO, the fork)
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -102,11 +118,36 @@ jobs:
             fi
           done
 
+      - name: Check the requested Locks revision
+        env:
+          LOCKS_REV_INPUT: ${{ github.event.inputs.locks_rev }}
+          LOCKS_REPO_INPUT: ${{ github.event.inputs.locks_repo }}
+        run: |
+          set -eu
+          args=""
+          if [ -n "${LOCKS_REV_INPUT:-}" ]; then
+            printf '%s' "$LOCKS_REV_INPUT" | grep -qE '^[0-9a-f]{40}$' || {
+              echo "locks_rev must be a full 40-character lowercase commit" >&2
+              exit 1
+            }
+            args="--build-arg LOCKS_REV=$LOCKS_REV_INPUT"
+          fi
+          case "${LOCKS_REPO_INPUT:-}" in
+            '') ;;
+            https://github.com/BitcoinErrorLog/locks.git | https://github.com/pubky/locks.git)
+              [ -n "${LOCKS_REV_INPUT:-}" ] || { echo "locks_repo needs locks_rev" >&2; exit 1; }
+              args="$args --build-arg LOCKS_REPO=$LOCKS_REPO_INPUT"
+              ;;
+            *) echo "locks_repo must be the BitcoinErrorLog fork or pubky/locks" >&2; exit 1 ;;
+          esac
+          echo "LOCKS_REV_ARGS=$args" >> "$GITHUB_ENV"
+
       - name: Build release image without publishing
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/locks-server-image"
-          docker buildx build --platform linux/amd64 \
+          # shellcheck disable=SC2086
+          docker buildx build --platform linux/amd64 $LOCKS_REV_ARGS \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --tag "$IMAGE:check-$GITHUB_SHA" \
@@ -154,6 +195,9 @@ jobs:
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Publish release image
+        env:
+          LOCKS_REV_INPUT: ${{ github.event.inputs.locks_rev }}
+          LOCKS_REPO_INPUT: ${{ github.event.inputs.locks_repo }}
         run: |
           set -eu
           test "$GITHUB_REF" = refs/heads/master
@@ -162,8 +206,25 @@ jobs:
           out="$RUNNER_TEMP/locks-server-image"
           mkdir -p "$out"
           locks_rev="$(sed -n 's/^ARG LOCKS_REV=//p' locks-server/Dockerfile | head -n 1)"
+          locks_repo="$(sed -n 's/^ARG LOCKS_REPO=//p' locks-server/Dockerfile | head -n 1)"
+          locks_rev_args=""
+          if [ -n "${LOCKS_REV_INPUT:-}" ]; then
+            printf '%s' "$LOCKS_REV_INPUT" | grep -qE '^[0-9a-f]{40}$'
+            locks_rev="$LOCKS_REV_INPUT"
+            locks_rev_args="--build-arg LOCKS_REV=$locks_rev"
+          fi
+          case "${LOCKS_REPO_INPUT:-}" in
+            '') ;;
+            https://github.com/BitcoinErrorLog/locks.git | https://github.com/pubky/locks.git)
+              test -n "${LOCKS_REV_INPUT:-}"
+              locks_repo="$LOCKS_REPO_INPUT"
+              locks_rev_args="$locks_rev_args --build-arg LOCKS_REPO=$locks_repo"
+              ;;
+            *) exit 1 ;;
+          esac
           release_tag="$IMAGE:locks-${locks_rev:0:12}-rails-${GITHUB_SHA:0:12}"
-          docker buildx build --platform linux/amd64 \
+          # shellcheck disable=SC2086
+          docker buildx build --platform linux/amd64 $locks_rev_args \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --tag "$release_tag" \
@@ -175,11 +236,13 @@ jobs:
           jq -n \
             --arg rails_sha "$GITHUB_SHA" \
             --arg locks_rev "$locks_rev" \
+            --arg locks_repo "$locks_repo" \
             --arg release_tag "$release_tag" \
             --arg release_image "$IMAGE@$release_digest" \
             --arg digest "$release_digest" \
             '{
               rails_sha: $rails_sha,
+              locks_repository: $locks_repo,
               locks_revision: $locks_rev,
               tag: $release_tag,
               digest: $digest,
@@ -187,7 +250,7 @@ jobs:
             }' > "$out/publish-evidence.json"
           {
             echo "### Published Lock Server image"
-            echo "- immutable image: \`$IMAGE@$release_digest\` (locks \`$locks_rev\`)"
+            echo "- immutable image: \`$IMAGE@$release_digest\` (locks \`$locks_rev\` from \`$locks_repo\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload publish evidence
