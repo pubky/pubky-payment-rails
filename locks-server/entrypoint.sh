@@ -16,10 +16,17 @@
 #   3. [pkdns] advertises the Railway public HTTPS domain (ICANN record) and
 #      publishes through the public pkarr relays.
 #   4. The Paykit Server is reached over Railway private networking.
-#   5. LOCKS_GRANT_CONNECT_CLIENT_ID (optional) turns on the Bitkit grant QR
-#      beside the Ring cookie QR. Unset, the config has no grant_connect
-#      section and /connect renders the cookie-only shell. The grant PoP key is
-#      derived from LOCKS_KEYPAIR_SEED; there is no separate grant secret.
+#   5. LOCKS_GRANT_CONNECT_CLIENT_ID (optional) selects grant connect. Set, the
+#      config says method = "grant-connect" and writes grant_connect.client_id
+#      and grant_connect.allowed_return_origins (the same origins as
+#      LOCKS_ALLOWED_RETURN_ORIGINS), so /connect offers one pubkyauth://signin_grant
+#      link that Bitkit and Pubky Ring 2.0+ approve and no cookie link. Unset,
+#      the config is method = "legacy-connect" with no grant_connect section
+#      (cookie-only shell). The grant PoP key is derived from LOCKS_KEYPAIR_SEED;
+#      there is no separate grant secret. Only Lock Server builds whose config
+#      knows method "grant-connect" (pubky/locks) accept it: the BitcoinErrorLog
+#      fork at the Dockerfile's default pin has only legacy-connect and refuses
+#      to start, so do not set the variable on an image built from that pin.
 #   6. LOCKS_RATE_LIMIT_TRUSTED_PROXY_HOPS (optional) writes
 #      [rate_limits] trusted_proxy_hops, the X-Forwarded-For hop count the
 #      public authority-status limit keys from the right. Unset or 0 leaves
@@ -46,7 +53,6 @@ public_ip="${LOCKS_PKDNS_PUBLIC_IP:-127.0.0.1}"
 allowed_origins="${LOCKS_ALLOWED_RETURN_ORIGINS:?LOCKS_ALLOWED_RETURN_ORIGINS is required (comma-separated origins)}"
 grant_connect_client_id="${LOCKS_GRANT_CONNECT_CLIENT_ID:-}"
 
-grant_connect_toml=""
 if [ -n "$grant_connect_client_id" ]; then
   case "$grant_connect_client_id" in
     *[!a-z0-9.:-]*)
@@ -54,9 +60,6 @@ if [ -n "$grant_connect_client_id" ]; then
       exit 1
       ;;
   esac
-  grant_connect_toml="
-[creator_authority_acquisition.grant_connect]
-client_id = \"$grant_connect_client_id\""
 fi
 
 trusted_proxy_hops="${LOCKS_RATE_LIMIT_TRUSTED_PROXY_HOPS:-}"
@@ -88,6 +91,16 @@ origins_toml="$(printf '%s' "$allowed_origins" | awk -F',' '{
   print out;
 }')"
 
+acquisition_method="legacy-connect"
+grant_connect_toml=""
+if [ -n "$grant_connect_client_id" ]; then
+  acquisition_method="grant-connect"
+  grant_connect_toml="
+[creator_authority_acquisition.grant_connect]
+client_id = \"$grant_connect_client_id\"
+allowed_return_origins = [$origins_toml]"
+fi
+
 cat > "$config_path" <<EOF
 bind_addr = "$bind_addr"
 
@@ -112,7 +125,7 @@ environment = "$runtime_environment"
 
 [creator_authority_acquisition]
 enabled = true
-method = "legacy-connect"
+method = "$acquisition_method"
 frontend_session_ttl_seconds = 86400
 frontend_session_code_ttl_seconds = 120
 

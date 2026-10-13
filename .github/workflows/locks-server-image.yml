@@ -95,9 +95,14 @@ jobs:
             echo "grant_connect was written without LOCKS_GRANT_CONNECT_CLIENT_ID" >&2
             exit 1
           fi
+          test "$(sed -n '/^\[creator_authority_acquisition\]$/,/^\[/p' "$work/off.toml" | grep -c '^method = "legacy-connect"$')" = 1
           LOCKS_GRANT_CONNECT_CLIENT_ID=locks.example PATH="$work/bin:$PATH" sh "$work/entrypoint.sh" > "$work/on.toml"
           grep -q '^\[creator_authority_acquisition.grant_connect\]$' "$work/on.toml"
           grep -q '^client_id = "locks.example"$' "$work/on.toml"
+          test "$(sed -n '/^\[creator_authority_acquisition\]$/,/^\[/p' "$work/on.toml" | grep -c '^method = "grant-connect"$')" = 1
+          test "$(sed -n '/^\[creator_authority_acquisition.grant_connect\]$/,/^\[/p' "$work/on.toml" | grep -c '^allowed_return_origins = \["https://app.example"\]$')" = 1
+          LOCKS_ALLOWED_RETURN_ORIGINS='https://a.example, https://b.example' LOCKS_GRANT_CONNECT_CLIENT_ID=locks.example PATH="$work/bin:$PATH" sh "$work/entrypoint.sh" > "$work/two.toml"
+          test "$(sed -n '/^\[creator_authority_acquisition.grant_connect\]$/,/^\[/p' "$work/two.toml" | grep -c '^allowed_return_origins = \["https://a.example", "https://b.example"\]$')" = 1
           test "$(sed -n '/^\[pubky\]$/,/^\[/p' "$work/on.toml" | grep -c '^pkarr_relays = ')" = 1
           test "$(sed -n '/^\[pkdns\]$/,/^\[/p' "$work/on.toml" | grep -c '^pkarr_relays = ')" = 0
           if LOCKS_GRANT_CONNECT_CLIENT_ID='bad"id' PATH="$work/bin:$PATH" sh "$work/entrypoint.sh" > /dev/null 2>&1; then
