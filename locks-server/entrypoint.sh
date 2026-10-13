@@ -19,7 +19,8 @@
 #   5. LOCKS_GRANT_CONNECT_CLIENT_ID (optional) selects grant connect. Set, the
 #      config says method = "grant-connect" and writes grant_connect.client_id
 #      and grant_connect.allowed_return_origins (the same origins as
-#      LOCKS_ALLOWED_RETURN_ORIGINS), so /connect offers one pubkyauth://signin_grant
+#      LOCKS_ALLOWED_RETURN_ORIGINS; startup fails if that list is blank once
+#      trimmed, since grant connect has no fallback origins), so /connect offers one pubkyauth://signin_grant
 #      link that Bitkit and Pubky Ring 2.0+ approve and no cookie link. Unset,
 #      the config is method = "legacy-connect" with no grant_connect section
 #      (cookie-only shell). The grant PoP key is derived from LOCKS_KEYPAIR_SEED;
@@ -94,6 +95,10 @@ origins_toml="$(printf '%s' "$allowed_origins" | awk -F',' '{
 acquisition_method="legacy-connect"
 grant_connect_toml=""
 if [ -n "$grant_connect_client_id" ]; then
+  if [ -z "$origins_toml" ]; then
+    echo "[locks-railway] LOCKS_ALLOWED_RETURN_ORIGINS must list at least one origin when LOCKS_GRANT_CONNECT_CLIENT_ID is set (grant-connect has no fallback origins)" >&2
+    exit 1
+  fi
   acquisition_method="grant-connect"
   grant_connect_toml="
 [creator_authority_acquisition.grant_connect]

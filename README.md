@@ -122,7 +122,8 @@ IPv6 wildcard.
 - `LOCKS_GRANT_CONNECT_CLIENT_ID` (optional) - the Lock Server's public
   hostname. When set, the config is `method = "grant-connect"` with
   `grant_connect.client_id` and `grant_connect.allowed_return_origins` (the
-  `LOCKS_ALLOWED_RETURN_ORIGINS` list), and `/connect` offers a single
+  `LOCKS_ALLOWED_RETURN_ORIGINS` list; the entrypoint refuses to start if that
+  list is blank after trimming), and `/connect` offers a single
   `signin_grant` link that Bitkit and Pubky Ring 2.0+ approve (Bitkit shows
   this value as the requesting app); there is no cookie link. Unset, the config
   is `method = "legacy-connect"` with no `grant_connect` section and `/connect`
