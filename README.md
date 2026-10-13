@@ -120,12 +120,20 @@ IPv6 wildcard.
 - `LOCKS_PKDNS_PUBLIC_IP` - advisory A-record IP for the PKARR packet; HTTP
   clients use the ICANN domain record.
 - `LOCKS_GRANT_CONNECT_CLIENT_ID` (optional) - the Lock Server's public
-  hostname. When set, `/connect` shows a Bitkit `signin_grant` QR beside the
-  Pubky Ring cookie QR, and Bitkit shows this value as the requesting app.
-  Unset, the config has no `grant_connect` section and `/connect` is
-  cookie-only. The grant Proof-of-Possession key is derived from
-  `LOCKS_KEYPAIR_SEED`, so there is no extra secret; rotating the seed orphans
-  stored grant authorities.
+  hostname. When set, the config is `method = "grant-connect"` with
+  `grant_connect.client_id` and `grant_connect.allowed_return_origins` (the
+  `LOCKS_ALLOWED_RETURN_ORIGINS` list; the entrypoint refuses to start if that
+  list is blank after trimming), and `/connect` offers a single
+  `signin_grant` link that Bitkit and Pubky Ring 2.0+ approve (Bitkit shows
+  this value as the requesting app); there is no cookie link. Unset, the config
+  is `method = "legacy-connect"` with no `grant_connect` section and `/connect`
+  is cookie-only. Switching a deployment to grant connect means creators with a
+  stored cookie authority reconnect once. Only Lock Server builds that know
+  `grant-connect` (`pubky/locks`) accept this: an image built from the
+  Dockerfile's default pin (the BitcoinErrorLog fork, legacy-connect only)
+  refuses to start with it set. The grant Proof-of-Possession key is derived
+  from `LOCKS_KEYPAIR_SEED`, so there is no extra secret; rotating the seed
+  orphans stored grant authorities.
 - `LOCKS_RATE_LIMIT_TRUSTED_PROXY_HOPS` (optional, `0`-`99`) - written as
   `[rate_limits] trusted_proxy_hops`. The public
   `GET /creators/{creator}/authority-status` limit (120 requests per 60 s per
