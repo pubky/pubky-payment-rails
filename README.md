@@ -1,9 +1,11 @@
 # pubky-payment-rails
 
 Railway deployment of the Pubky marketplace staging payment rails: Lock Server
-(BitcoinErrorLog/locks, a fork of pubky/locks) + Paykit Server (BitcoinErrorLog/paykit-server, marketplace-rails
-fork of pubky/paykit-server) + Bitcoin Core regtest +
-Fulcrum, running real payment mechanics with valueless regtest coins.
+(BitcoinErrorLog/locks, a fork of pubky/locks) + Paykit Server + Bitcoin Core
+regtest + Fulcrum, running real payment mechanics with valueless regtest coins.
+Paykit Server runs the immutable `ghcr.io/bitcoinerrorlog/paykit-server` image
+published by [`BitcoinErrorLog/paykit-server`](https://github.com/BitcoinErrorLog/paykit-server),
+not a build from this repository.
 
 This is the hosted version of the locally verified `payments-env` composed
 Docker environment. Every component is pinned to the exact revision /
@@ -29,18 +31,12 @@ exists in this deployment.
 | Component | Source | Revision |
 | --- | --- | --- |
 | Lock Server | `BitcoinErrorLog/locks` | `53a042826ea9398b16664d7da1af2238962ccde1` |
-| Paykit Server | `BitcoinErrorLog/paykit-server` (`marketplace-rails`; fork of `pubky/paykit-server` @ `f38c7915e6b9b104e040773e78438f8aa984c46c`) | `9687ff07ec4cde7c18970c943d308c6b296a8a42` |
-| paykit-rs (build dep) | `pubky/paykit-rs` | `52a852995bfc457b78d32f5a45f6741766a89bba` |
-| locks-core (build dep) | `pubky/locks` | `df5ea1b6d8dcdec3a9b5a915c3f57bca69d75c8a` |
+| Paykit Server | `ghcr.io/bitcoinerrorlog/paykit-server` (published by [`BitcoinErrorLog/paykit-server`](https://github.com/BitcoinErrorLog/paykit-server)) | Immutable digest; the connected digest and its source SHA are recorded in that repository's [`docs/operations/production-image.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/docs/operations/production-image.md). |
 | bitcoind | `bitcoin/bitcoin:29.1` | `sha256:de62c536feb629bed65395f63afd02e3a7a777a3ec82fbed773d50336a739319` |
 | Fulcrum | `cculianu/fulcrum:v2.0.0` | `sha256:cb1c006d0cff104696f4791d0f1516699b2c163120165461385e4de206271943` |
 
-The Rust Dockerfiles clone the pinned repos at build time and fail closed if
-the checkout does not match the pin. Paykit Server is cloned from the
-`BitcoinErrorLog/paykit-server` fork, not from stock `pubky/paykit-server`.
-The Paykit build additionally runs `prepare-local-docker-sources.sh`, which
-aborts if the supplied trees drift from the dependency pins committed in
-paykit-server's manifests.
+The Rust (Lock Server) Dockerfile clones its pinned repository at build time
+and fails closed if the checkout does not match the pin.
 
 ## Topology (Railway project `pubky-marketplace-staging`)
 
@@ -69,7 +65,7 @@ post-cutover BTC live purchase was re-proven with this driver the same day.
 | --- | --- | --- | --- |
 | `locks-server` | `locks-server/Dockerfile` | `[::]:3000` | public HTTPS domain + private |
 | `fiat-verifier` | `pubky-fiat-verifier` repo Dockerfile | `[::]:3002` | public HTTPS domain (Stripe webhooks + buyer checkout-sessions) + private |
-| `paykit-server` | `paykit-server/Dockerfile` | `[::]:3001` | public HTTPS domain (setup UI) + private |
+| `paykit-server` | `ghcr.io/bitcoinerrorlog/paykit-server` image (by digest) | `[::]:3001` | public HTTPS domain (setup UI) + private |
 | `bitcoind` | `bitcoind/Dockerfile` | `[::]:18443` RPC | private only |
 | `fulcrum` | `fulcrum/Dockerfile` | `[::]:50001` TCP | private + public TCP proxy (Bitkit) |
 | `locks-postgres` | Railway managed Postgres | 5432 | private only |
@@ -145,87 +141,73 @@ IPv6 wildcard.
   client pick its own key; too few puts every client in one bucket.
 
 ### paykit-server
-- `PAYKIT_TRUSTED_LOCKS_PUBLIC_KEY` - must equal `LOCKS_PUBLIC_KEY`.
-  Immutable deployment metadata: if the Lock Server identity is ever rotated,
-  wipe/replace `paykit-postgres` in the same operation.
-- `PAYKIT_DATABASE_URL` - references `paykit-postgres`.
-- `PAYKIT_MASTER_KEY` - base64url-no-pad 32B master key.
-- `PAYKIT_SETUP_ALLOWED_ORIGINS` - comma-separated origins for the hosted
-  `/setup` page AND the CORS allow-list of the browser-called manual claim
-  route `POST /v0/accounts/claim` (the Vercel app origin).
-- `PAYKIT_ELECTRUM_ENDPOINT` (default `tcp://fulcrum.railway.internal:50001`)
-- `PAYKIT_BITCOIN_NETWORK` (default `regtest`) - one of `mainnet`, `testnet`,
-  `signet`, or `regtest`.
-- `PAYKIT_ELECTRUM_POLL_INTERVAL` (default `1s`) - interval matching
-  `[0-9]+(ms|s|m)`; non-regtest networks require at least `30s`.
-- `PAYKIT_STACK_ROLE` - required on every network; must be `production` or
-  `proof`. Set `PAYKIT_STACK_ROLE=proof` on the existing regtest service before
-  pinning paykit-server >= c862005; the server adopts the role once and refuses
-  later mismatches.
-- `PAYKIT_BITCOIN_CREATION_ENABLED` (unset by default) - optional TOML boolean
-  `true` or `false` controlling Bitcoin creation.
-- `MARKETPLACE_TRUSTED_PUBLIC_KEY` (optional) - `pubky<z-base32>` public key
-  of the marketplace transaction service's request-signing keypair. When set,
-  `x-paykit-signature` request signatures by this key are accepted on the
-  signed business routes (`/v0/payment-requests`, `/transactions/status`,
-  `/invoices`) exactly like Lock Server signatures. The transaction service
-  holds the matching ed25519 seed (`PAYKIT_REQUEST_SIGNING_KEY`).
-- `MARKETPLACE_TRUSTED_PUBLIC_KEYS` (optional) - comma-separated list of
-  `pubky<z-base32>` public keys (whitespace tolerated), templated as the TOML
-  `marketplace.trusted_public_keys` list; every listed key is trusted equally.
-  Mutually exclusive with `MARKETPLACE_TRUSTED_PUBLIC_KEY`: setting both (or a
-  malformed/empty entry) fails the entrypoint before the server starts. Use
-  the list form to rotate signing keys without downtime (add the new key,
-  cut the service over, remove the old key).
-  Key form note: the paykit-server fork's config parser accepts ONLY the
-  57-character `pubky`-prefixed form (`pubky` + 52 z-base-32 chars from the
-  alphabet `ybndrfg8ejkmcpqxot1uwisza345h769`); a bare 52-char key is
-  rejected at server startup, so the entrypoint validator rejects it first.
-  To derive a key's public half from the marketplace-service's hex
-  `PAYKIT_REQUEST_SIGNING_KEY` seed, use the
-  `paykit-server/tools/derive-marketplace-pubkey` tool: it prints ONLY the
-  57-character `pubky`-prefixed public key and zeroizes the seed buffer.
-  Prefer `--stdin` so the seed never lands in shell history:
+
+The service runs the published `ghcr.io/bitcoinerrorlog/paykit-server` image.
+It reads a closed-schema TOML file named by `PAYKIT_CONFIG`; unknown keys are
+rejected. Its required runtime and secret environment variables are
+`PAYKIT_DATABASE_URL` (the runtime Postgres URL, referencing
+`paykit-postgres`), `PAYKIT_MIGRATOR_DATABASE_URL` (the migration-owner
+Postgres URL), and `PAYKIT_MASTER_KEY` (unpadded base64url of exactly 32
+bytes). The complete schema and environment contract are in the paykit-server
+repository's [README "Configuration and secrets"](https://github.com/BitcoinErrorLog/paykit-server#configuration-and-secrets),
+[`config/paykit-server.example.toml`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/config/paykit-server.example.toml),
+and [`.env.example`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/.env.example).
+
+This topology depends on these TOML settings:
+
+- `[http] listen_addr = "[::]:3001"` - the container's HTTP listener.
+- `[locks] trusted_public_key` - must equal the Lock Server's
+  `LOCKS_PUBLIC_KEY`. This is immutable deployment metadata: if the Lock
+  Server identity is ever rotated, wipe/replace `paykit-postgres` in the same
+  operation.
+- `[setup] allowed_origins` - exact origins of the web app. This configures
+  the hosted `/setup` page and the CORS allow-list of the browser-called
+  manual claim route `POST /v0/accounts/claim`.
+- `[paykit] receiver_path = "bitkit/server"`,
+  `receiver_path_priority = ["bitkit"]`, and `network = "mainnet"` - the
+  receiver location and Pubky network. Optional `[paykit] auth_relay` sets the
+  HTTP relay inbox base used by the manual claim session loopback (default
+  `https://httprelay.pubky.app/inbox`).
+- `[bitcoin] network` - one of `mainnet`, `testnet`, `signet`, or `regtest`.
+  Optional `[bitcoin] creation_enabled` is a boolean controlling Bitcoin
+  creation.
+- `[electrum] endpoint` and `poll_interval` - the Electrum connection and
+  polling interval. This topology uses
+  `tcp://fulcrum.railway.internal:50001` on regtest; mainnet requires an
+  `ssl://` endpoint.
+- `[deployment] stack_role` - required on every network; must be `production`
+  or `proof`. The server adopts the role once and then enforces it.
+- `[marketplace] trusted_public_key` or
+  `[marketplace] trusted_public_keys = [...]` (optional) - the public key or
+  list of public keys for the marketplace transaction service's
+  request-signing keypairs. The single-key and list forms are mutually
+  exclusive, and every listed key is trusted equally for signed-request
+  authentication. Use the list form to rotate signing keys without downtime:
+  add the new key, cut the service over, then remove the old key.
+  The config parser accepts ONLY the 57-character `pubky`-prefixed form
+  (`pubky` + 52 z-base-32 chars from the alphabet
+  `ybndrfg8ejkmcpqxot1uwisza345h769`); a bare 52-char key is rejected at
+  server startup. The transaction service holds the matching ed25519 seed
+  (`PAYKIT_REQUEST_SIGNING_KEY`). To derive a key's public half from that hex
+  seed, use `tools/derive-marketplace-pubkey`: it prints ONLY the 57-character
+  `pubky`-prefixed public key and zeroizes the seed buffer. Prefer `--stdin`
+  so the seed never lands in shell history:
 
   ```bash
   read -rs PAYKIT_REQUEST_SIGNING_KEY && export PAYKIT_REQUEST_SIGNING_KEY && \
     printf '%s' "$PAYKIT_REQUEST_SIGNING_KEY" | \
-    cargo run --quiet --manifest-path paykit-server/tools/derive-marketplace-pubkey/Cargo.toml -- --stdin; \
+    cargo run --quiet --manifest-path tools/derive-marketplace-pubkey/Cargo.toml -- --stdin; \
     unset PAYKIT_REQUEST_SIGNING_KEY
   ```
 
-  (The tool also still reads `PAYKIT_REQUEST_SIGNING_KEY` from the
-  environment when `--stdin` is not passed.)
-- `PAYKIT_AUTH_RELAY` (optional, default `https://httprelay.pubky.app/inbox`) -
-  HTTP relay inbox base used by the manual claim session loopback.
+  (The tool also reads `PAYKIT_REQUEST_SIGNING_KEY` from the environment when
+  `--stdin` is not passed.)
 
-The paykit-server image builds from the `BitcoinErrorLog/paykit-server` fork
-(`marketplace-rails` branch) at `9687ff07ec4cde7c18970c943d308c6b296a8a42`,
-which adds on top of upstream `pubky/paykit-server` @ `f38c7915`:
-- network-correct endpoint identifiers, lowercase `"btc"` asset, and JSON
-  `{"value": address}` endpoint payloads (without these, real wallets such as
-  Bitkit silently reject the payment material)
-- `POST /v0/accounts/claim` - manual watch-only account registration for
-  browser sellers. Body `{auth_token, account_xpub, account_index}`, where
-  `auth_token` is the unpadded-base64url serialized Pubky AuthToken whose
-  capabilities exactly match the companion setup capabilities
-  (`/pub/paykit/v0/bitkit/server/:rw,/pub/paykit/v0/private/bitkit/server/:rw`).
-  The server exchanges the token for a homeserver session through the HTTP
-  relay, publishes the receiver marker, and persists the same encrypted
-  creator record the Bitkit companion flow writes. Re-claims with the same
-  `(xpub, account_index)` refresh the session; a different account is refused
-  with `409 account_mismatch` (upstream reauthentication semantics).
-- `GET /v0/accounts/{creator}` - public `{claimed: bool}` existence lookup
-  used by the marketplace to report per-seller Bitcoin availability.
-- `POST /v0/payment-requests` - signed (marketplace key) lock-free payment
-  request creation for physical orders. Body
-  `{creator, reader, reference, amount_sats}` (canonical JSON, signed like
-  `/invoices`); `reference` is a 26-char Crockford base32 identifier the
-  marketplace also uses as `bundle_id` in `/transactions/status` polls.
-- `[marketplace] trusted_public_keys = [...]` config list form (mutually
-  exclusive with the single `trusted_public_key`): every listed key is
-  trusted equally for signed-request auth, enabling zero-downtime rotation
-  of the marketplace request-signing key.
+The marketplace routes the shop relies on (`POST /v0/accounts/claim`,
+`GET /v0/accounts/{creator}`, `POST /v0/payment-requests`, and signed-request
+authentication by the marketplace keys) are part of paykit-server and
+documented in that repository's [`docs/accounts-api.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/docs/accounts-api.md)
+and [README](https://github.com/BitcoinErrorLog/paykit-server).
 
 ## Secrets handling
 
@@ -277,15 +259,19 @@ environment variables" above.
 
 ## Deploy / redeploy
 
-Each service deploys from its subdirectory with the Railway CLI (project
-`pubky-marketplace-staging`, environment `production`):
+Services built from this repository deploy from their subdirectories with the
+Railway CLI (project `pubky-marketplace-staging`, environment `production`):
 
 ```bash
 railway up --service locks-server --path-as-root locks-server --detach
-railway up --service paykit-server --path-as-root paykit-server --detach
 railway up --service bitcoind --path-as-root bitcoind --detach
 railway up --service fulcrum --path-as-root fulcrum --detach
 ```
+
+The Paykit service runs the published image by digest and deploys with the
+paykit-server repository's [`docs/operations/deploy.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/docs/operations/deploy.md)
+procedure: stop then start, with one process per seat. Never run `railway up`
+against it; that would rebind the service from the digest to an upload build.
 
 `locks-server` can also ship as an immutable image. The `Lock Server image`
 workflow builds `locks-server/` (base images pinned by digest) and publishes it
@@ -314,16 +300,17 @@ variables, applies only between deployments whose images embed the same
 migrations. No rebuilt image stands in for a previous deployment: a rebuild of
 an older revision is source-equivalent, not byte-identical.
 
-Rebuilding is deterministic: sources are cloned at the pinned revisions during
-the image build. To bump a pin, change the `ARG` default in the service's
-Dockerfile and redeploy that service.
+For services built from this repository, rebuilding is deterministic: sources
+are cloned at the pinned revisions during the image build. To bump one of
+these services' pins, change the `ARG` default in its Dockerfile and redeploy
+that service.
 
 State-reset rules (mirror the payments-env volume-coherence note):
 - Wiping `paykit-postgres` alone is safe (loses invoices/creators; creators
   re-run setup).
 - Rotating the Lock Server seed requires wiping BOTH `locks-postgres` state
-  derived from the old identity AND `paykit-postgres`, and updating
-  `PAYKIT_TRUSTED_LOCKS_PUBLIC_KEY` - otherwise Paykit rejects every signed
+  derived from the old identity AND `paykit-postgres`, and updating Paykit's
+  `[locks] trusted_public_key` setting - otherwise Paykit rejects every signed
   call from the new identity.
 - Wiping the `bitcoind` volume resets the chain; Fulcrum's `/data` volume must
   be wiped with it, and any creator watch-only balances vanish (regtest coins

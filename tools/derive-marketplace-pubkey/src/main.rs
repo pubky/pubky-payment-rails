@@ -4,9 +4,8 @@
 //! exact construction `PaykitClient::new` performs in marketplace-service.
 //!
 //! Prints ONLY the 57-character `pubky`-prefixed z-base-32 public key on
-//! stdout - the exact form the paykit-server fork's config parser accepts
-//! (proven in BitcoinErrorLog/paykit-server @ 37ffdd4). The seed is never
-//! printed or logged and is zeroized after use.
+//! stdout - the exact form paykit-server's config parser accepts. The seed is
+//! never printed or logged and is zeroized after use.
 //!
 //! Seed input (exactly one):
 //!   - `--stdin`: read the 64-char hex seed from stdin, so the seed never
