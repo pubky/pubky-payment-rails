@@ -11,13 +11,13 @@ This is the hosted version of the locally verified `payments-env` composed
 Docker environment. Every component is pinned to the exact revision /
 image digest that passed the full end-to-end payment verification there.
 
-This repo deploys Bitcoin networks side by side: regtest for development, mainnet for the live marketplace rail. The mainnet stacks are **watch-only**: no component here may hold a Bitcoin private key, seed, mnemonic, or a descriptor containing private material. paykit-server persists account xpubs and derives with `Secp256k1::verification_only()`; any change that gives it the ability to sign must be refused. A mainnet service may only use a first-party Electrum endpoint; a third-party endpoint, or sharing a database between networks or stack roles, requires owner sign-off and a Kimi audit.
+This repo deploys Bitcoin networks side by side: regtest for development, mainnet for the live marketplace rail. The mainnet stacks are **watch-only**: no component here may hold a Bitcoin private key, seed, mnemonic, or a descriptor containing private material. paykit-server persists account xpubs and derives with `Secp256k1::verification_only()`; any change that gives it the ability to sign must be refused. A mainnet service may only use a first-party Electrum endpoint; a third-party endpoint, or sharing a database between networks or stack roles, requires owner sign-off and an independent review.
 
 ## Identity network: official staging Pubky network, not a private testnet
 
 The local payments-env pinned its own `pubky-testnet`. This deployment does
 not. Both servers are configured with `network = "mainnet"`, which makes the
-pinned Pubky SDK (pkarr 6.0.1) resolve identities through its default relays
+pinned Pubky SDK resolve identities through its default relays
 `https://pkarr.pubky.app` and `https://pkarr.pubky.org` - the same relays the
 official staging Pubky network (homeserver
 `ufibwbmed6jeq9k4p583go95wofakh9fwpp4k734trq79pd9u1uy` /
@@ -143,17 +143,66 @@ IPv6 wildcard.
 ### paykit-server
 
 The service runs the published `ghcr.io/bitcoinerrorlog/paykit-server` image.
-It reads a closed-schema TOML file named by `PAYKIT_CONFIG`; unknown keys are
-rejected. Its required runtime and secret environment variables are
-`PAYKIT_DATABASE_URL` (the runtime Postgres URL, referencing
-`paykit-postgres`), `PAYKIT_MIGRATOR_DATABASE_URL` (the migration-owner
-Postgres URL), and `PAYKIT_MASTER_KEY` (unpadded base64url of exactly 32
-bytes). The complete schema and environment contract are in the paykit-server
-repository's [README "Configuration and secrets"](https://github.com/BitcoinErrorLog/paykit-server#configuration-and-secrets),
+It reads one closed-schema TOML file at the path named by `PAYKIT_CONFIG`;
+unknown keys are rejected. The image does not render that file from service
+variables: the operator writes the TOML, places it in the container (for
+example on a volume mounted into the service), and sets `PAYKIT_CONFIG` to its
+path. The file holds no secrets. Its required runtime and secret environment
+variables are `PAYKIT_CONFIG`, `PAYKIT_DATABASE_URL` (the runtime Postgres
+URL, referencing `paykit-postgres`), `PAYKIT_MIGRATOR_DATABASE_URL` (the
+migration-owner Postgres URL), and `PAYKIT_MASTER_KEY` (unpadded base64url of
+exactly 32 bytes). The complete schema and environment contract are in the
+paykit-server repository's [README "Configuration and secrets"](https://github.com/BitcoinErrorLog/paykit-server#configuration-and-secrets),
 [`config/paykit-server.example.toml`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/config/paykit-server.example.toml),
 and [`.env.example`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/.env.example).
 
-This topology depends on these TOML settings:
+Check a file before a deploy uses it:
+
+```bash
+paykit-server --check-config <path>
+```
+
+It prints `config ok: network=<network> stack_role=<role>` and exits 0, or
+prints the first error and exits 2. A deploy stops the old process before it
+starts the new one, so a file the server refuses leaves the service down.
+
+#### Variables of the former in-repo entrypoint
+
+An entrypoint in this repository used to render the TOML from service
+variables. The published image reads none of them: a leftover variable is
+ignored without a log line, so remove it and set the TOML key instead.
+
+| Former variable | TOML key | Former entrypoint default |
+| --- | --- | --- |
+| `PAYKIT_LISTEN_ADDR` | `[http] listen_addr` | `[::]:3001` |
+| `PAYKIT_TRUSTED_LOCKS_PUBLIC_KEY` | `[locks] trusted_public_key` | required |
+| `MARKETPLACE_TRUSTED_PUBLIC_KEY` | `[marketplace] trusted_public_key` | section omitted |
+| `MARKETPLACE_TRUSTED_PUBLIC_KEYS` (comma-separated) | `[marketplace] trusted_public_keys` (array) | section omitted |
+| `PAYKIT_SETUP_ALLOWED_ORIGINS` (comma-separated) | `[setup] allowed_origins` (array) | required |
+| `PAYKIT_AUTH_RELAY` | `[paykit] auth_relay` | key omitted |
+| `PAYKIT_BITCOIN_NETWORK` | `[bitcoin] network` | `regtest` |
+| `PAYKIT_BITCOIN_CREATION_ENABLED` | `[bitcoin] creation_enabled` | key omitted |
+| `PAYKIT_ELECTRUM_ENDPOINT` | `[electrum] endpoint` | `tcp://fulcrum.railway.internal:50001` |
+| `PAYKIT_ELECTRUM_POLL_INTERVAL` | `[electrum] poll_interval` | `1s` |
+| `PAYKIT_STACK_ROLE` | `[deployment] stack_role` | required |
+| `PAYKIT_ENTRYPOINT_RENDER_ONLY` | none; use `paykit-server --check-config` | - |
+
+The entrypoint also wrote fixed values: `[paykit] receiver_path =
+"bitkit/server"`, `receiver_path_priority = ["bitkit"]`, `network =
+"mainnet"`, and `[outbox] poll_interval = "500ms"`. The published image
+refuses any persistence duration under one second, so `500ms` no longer
+starts; use at least `"1s"` (the example file uses `"5s"`). The entrypoint
+wrote no `[paykit] client_id`, which the published image requires.
+
+#### TOML settings
+
+Keys with no default, which the file must set: `[http] listen_addr`,
+`[locks] trusted_public_key`, `[setup] allowed_origins`, `[paykit] client_id`,
+`receiver_path` and `network`, `[bitcoin] network`, `[electrum] endpoint`,
+`[outbox] poll_interval`, and `[deployment] stack_role`. A file missing any of
+them fails at startup.
+
+This topology depends on these settings:
 
 - `[http] listen_addr = "[::]:3001"` - the container's HTTP listener.
 - `[locks] trusted_public_key` - must equal the Lock Server's
@@ -162,21 +211,36 @@ This topology depends on these TOML settings:
   operation.
 - `[setup] allowed_origins` - exact origins of the web app. This configures
   the hosted `/setup` page and the CORS allow-list of the browser-called
-  manual claim route `POST /v0/accounts/claim`.
+  accounts routes (`GET /v0/accounts/{creator}`,
+  `GET /v0/accounts/{creator}/status`, and
+  `POST /v0/accounts/{creator}/alerts/acknowledge`).
+- `[paykit] client_id` - required, no default: the server's Pubky grant
+  client ID (the example file uses `"paykit-server"`).
 - `[paykit] receiver_path = "bitkit/server"`,
   `receiver_path_priority = ["bitkit"]`, and `network = "mainnet"` - the
   receiver location and Pubky network. Optional `[paykit] auth_relay` sets the
-  HTTP relay inbox base used by the manual claim session loopback (default
-  `https://httprelay.pubky.app/inbox`).
-- `[bitcoin] network` - one of `mainnet`, `testnet`, `signet`, or `regtest`.
-  Optional `[bitcoin] creation_enabled` is a boolean controlling Bitcoin
-  creation.
+  HTTP relay inbox the Pubky auth flows use, including Bitkit setup (default:
+  the pinned Pubky SDK's relay inbox).
+- `[bitcoin] network` - required, no default (the former entrypoint defaulted
+  to `regtest`): one of `mainnet`, `testnet`, `signet`, or `regtest`.
+  `[bitcoin] creation_enabled` defaults to `false`. While it is `false` the
+  server refuses new Bitcoin payment requests and keeps observing existing
+  invoices; set `true` on a stack that takes new Bitcoin purchases.
+  `/health/ready` reports the value as `bitcoin_creation_enabled`.
 - `[electrum] endpoint` and `poll_interval` - the Electrum connection and
   polling interval. This topology uses
   `tcp://fulcrum.railway.internal:50001` on regtest; mainnet requires an
-  `ssl://` endpoint.
+  `ssl://` endpoint. `poll_interval` defaults to `10s` and must be at least
+  `1s`; `[electrum] observer_lease_ttl` (default `30s`) must be at least twice
+  it. Regtest uses `1s`. Mainnet uses `30s`, the floor the former entrypoint
+  enforced off regtest, with `observer_lease_ttl` of at least `60s`. The image
+  also budgets Electrum lookups with `max_requests_per_tick` (default 1000)
+  and `max_requests_per_second` (default 5).
+- `[outbox] poll_interval` - required, no default, at least `1s`.
 - `[deployment] stack_role` - required on every network; must be `production`
   or `proof`. The server adopts the role once and then enforces it.
+  `production` requires `[bitcoin] network = "mainnet"`, so the regtest stack
+  uses `proof`.
 - `[marketplace] trusted_public_key` or
   `[marketplace] trusted_public_keys = [...]` (optional) - the public key or
   list of public keys for the marketplace transaction service's
@@ -203,11 +267,14 @@ This topology depends on these TOML settings:
   (The tool also reads `PAYKIT_REQUEST_SIGNING_KEY` from the environment when
   `--stdin` is not passed.)
 
-The marketplace routes the shop relies on (`POST /v0/accounts/claim`,
-`GET /v0/accounts/{creator}`, `POST /v0/payment-requests`, and signed-request
-authentication by the marketplace keys) are part of paykit-server and
+The marketplace routes the shop relies on (the hosted `/setup` flow sellers
+use to connect Bitkit, `GET /v0/accounts/{creator}`,
+`POST /v0/payment-requests`, and signed-request authentication by the
+marketplace keys) are part of paykit-server and
 documented in that repository's [`docs/accounts-api.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/docs/accounts-api.md)
 and [README](https://github.com/BitcoinErrorLog/paykit-server).
+`POST /v0/accounts/claim` answers HTTP 410 (`manual_claim_removed`); the
+manual claim it served was removed in favour of `/setup`.
 
 ## Secrets handling
 
