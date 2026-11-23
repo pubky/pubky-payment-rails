@@ -9,8 +9,6 @@
 # Payment Request from the deployed rails with staging-homeserver identities.
 FROM rust:1.91.1-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-
 ARG PAYKIT_SERVER_REPO=https://github.com/BitcoinErrorLog/paykit-server.git
 ARG PAYKIT_SERVER_REV=aa53f66404a2551c89ebfc202dee756401c376ff
 
