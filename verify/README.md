@@ -21,6 +21,20 @@ Subcommands: gen, signup, identities, connect, setup-start, setup-claim,
 setup-poll, reader-marker, publish, negative, proof, status, lifecycle,
 credential, checkout.
 
+`setup-claim <authUrl> <tpub>` prints the JSON that `paykit-companion-auth`
+reads on stdin to approve a `/setup` flow in place of Bitkit. That helper is a
+paykit-server binary and is not in the published image. Build it from the
+paykit-server revision the deployed image was built from (recorded in that
+repository's `docs/operations/production-image.md`):
+
+```
+PAYKIT_SOURCE_SHA=<revision> cargo build --locked --release -p paykit-server --bin paykit-companion-auth
+```
+
+(the paykit-server build script requires `PAYKIT_SOURCE_SHA`), or use the
+paykit-server `Dockerfile.local` image, which ships it. The helper accepts
+only a `tpub` account key, so it serves the regtest stack only.
+
 ## Fiat locks (fiat-verifier gateway)
 
 `publish` takes `ASSET`/`AMOUNT` env overrides: `ASSET=USD AMOUNT=1999` authors

@@ -11,7 +11,8 @@
 //   identities                 - print creator/reader pubkys
 //   connect <state>            - full locks legacy-connect flow -> frontend session JSON
 //   setup-start <state>        - fetch paykit /setup, print { flow, authUrl }
-//   setup-claim <authUrl>      - print the companion claim JSON for paykit-companion-auth stdin
+//   setup-claim <authUrl> <tpub> - print the companion claim JSON for paykit-companion-auth stdin
+//                                (paykit-server binary; see verify/README.md)
 //   setup-poll <flow>          - poll POST /setup/<flow>/complete until 200
 //   reader-marker              - publish the reader's paykit receiver marker
 //   publish <sessionToken> <state> - lock-service-config + guarded upload + content lock
