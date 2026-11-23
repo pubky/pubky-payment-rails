@@ -27,7 +27,8 @@ WORKDIR /build/paykit-server
 COPY apply-mainnet-patch.sh /tmp/apply-mainnet-patch.sh
 RUN sh /tmp/apply-mainnet-patch.sh paykit-server/src/bin/paykit-reader-demo.rs
 
-RUN cargo build --locked --release -p paykit-server --bin paykit-reader-demo && \
+# paykit-server's build script requires the source revision.
+RUN PAYKIT_SOURCE_SHA="$PAYKIT_SERVER_REV" cargo build --locked --release -p paykit-server --bin paykit-reader-demo && \
     install -Dm755 target/release/paykit-reader-demo /out/paykit-reader-demo
 
 FROM debian:bookworm-20260112-slim@sha256:56ff6d36d4eb3db13a741b342ec466f121480b5edded42e4b7ee850ce7a418ee AS runtime
