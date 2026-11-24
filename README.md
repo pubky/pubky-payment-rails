@@ -156,15 +156,24 @@ paykit-server repository's [README "Configuration and secrets"](https://github.c
 [`config/paykit-server.example.toml`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/config/paykit-server.example.toml),
 and [`.env.example`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/.env.example).
 
-Check a file before a deploy uses it:
+Check a file before a deploy uses it. The image's entrypoint is already
+`paykit-server`, so pass only the flag and the path:
 
 ```bash
-paykit-server --check-config <path>
+docker run --rm -v "$PWD/paykit.toml:/cfg.toml:ro" \
+  -e PAYKIT_DATABASE_URL=postgres://check:check@localhost/check \
+  -e PAYKIT_MIGRATOR_DATABASE_URL=postgres://check:check@localhost/check \
+  -e PAYKIT_MASTER_KEY=<placeholder: unpadded base64url of 32 bytes> \
+  <image> --check-config /cfg.toml
 ```
 
-It prints `config ok: network=<network> stack_role=<role>` and exits 0, or
-prints the first error and exits 2. A deploy stops the old process before it
-starts the new one, so a file the server refuses leaves the service down.
+The check reads the file and the three environment variables and opens no
+database connection, so placeholder values are enough; never pass the real
+URLs or key. It prints `config ok: network=<network> stack_role=<role>` and
+exits 0, or prints the first error and exits 2. Exit code 2 means either a bad
+file or a missing or malformed variable; the printed error says which. A
+deploy stops the old process before it starts the new one, so a file the
+server refuses leaves the service down.
 
 #### Variables of the former in-repo entrypoint
 
@@ -189,10 +198,9 @@ ignored without a log line, so remove it and set the TOML key instead.
 
 The entrypoint also wrote fixed values: `[paykit] receiver_path =
 "bitkit/server"`, `receiver_path_priority = ["bitkit"]`, `network =
-"mainnet"`, and `[outbox] poll_interval = "500ms"`. The published image
-refuses any persistence duration under one second, so `500ms` no longer
-starts; use at least `"1s"` (the example file uses `"5s"`). The entrypoint
-wrote no `[paykit] client_id`, which the published image requires.
+"mainnet"`, and `[outbox] poll_interval = "500ms"`. Set the same values in the
+TOML; the published image accepts `500ms` for `[outbox] poll_interval`. The
+entrypoint wrote no `[paykit] client_id`, which the published image requires.
 
 #### TOML settings
 
@@ -236,7 +244,8 @@ This topology depends on these settings:
   enforced off regtest, with `observer_lease_ttl` of at least `60s`. The image
   also budgets Electrum lookups with `max_requests_per_tick` (default 1000)
   and `max_requests_per_second` (default 5).
-- `[outbox] poll_interval` - required, no default, at least `1s`.
+- `[outbox] poll_interval` - required, no default, must be non-zero. The
+  former entrypoint's `500ms` is accepted.
 - `[deployment] stack_role` - required on every network; must be `production`
   or `proof`. The server adopts the role once and then enforces it.
   `production` requires `[bitcoin] network = "mainnet"`, so the regtest stack
