@@ -344,10 +344,70 @@ railway up --service bitcoind --path-as-root bitcoind --detach
 railway up --service fulcrum --path-as-root fulcrum --detach
 ```
 
-The Paykit service runs the published image by digest and deploys with the
-paykit-server repository's [`docs/operations/deploy.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/master/docs/operations/deploy.md)
-procedure: stop then start, with one process per seat. Never run `railway up`
+The Paykit service runs the published image by digest. Never run `railway up`
 against it; that would rebind the service from the digest to an upload build.
+Deploy it with the procedure in "Paykit Server: deploying a new image" below.
+The paykit-server repository's `scripts/release/deploy-seat.sh` and its
+[`docs/operations/deploy.md`](https://github.com/BitcoinErrorLog/paykit-server/blob/f8b207718fb144e3c803a15fa2c957caeebbf0be/docs/operations/deploy.md)
+cover that repository's `staging` and `production` seats only. Their
+post-checks require `bitcoin_creation_enabled: false` (staging) or a
+`production:` `stack_id` (production), so neither passes for this rail.
+
+### Paykit Server: deploying a new image
+
+This rail runs `[deployment] stack_role = "proof"` and `[bitcoin] network =
+"regtest"`, with `[bitcoin] creation_enabled = true` while it takes purchases.
+Paykit Server supports one process only (no replicas, no active-active), so a
+deploy is stop-then-start: the old process must be gone before the new one
+starts.
+
+1. Take the new digest from the image workflow run's `publish-evidence.json`
+   artifact (field `.digest`) and the 40-character source SHA from the image's
+   `org.opencontainers.image.revision` label. Record the digest connected now
+   as the rollback digest.
+2. Stop the running Paykit deployment. Wait until `GET /health/live` stops
+   answering 200 on three consecutive probes.
+3. Point the deployment platform's image source for the Paykit service at
+   `ghcr.io/bitcoinerrorlog/paykit-server@sha256:<new-digest>`. Wait until the
+   new deployment reports success, and confirm it is the only running Paykit
+   deployment.
+4. Run the post-checks below. If the new deployment does not start or a check
+   fails, point the image source back at the rollback digest. An image older
+   than the newest migration the database has applied does not start (the
+   migrator refuses applied migrations it does not know), so past that point
+   recovery is a forward fix.
+
+Post-checks; every one must pass:
+
+- The startup metadata line is a JSON log line whose `fields` are
+  `source_sha`, `version`, `network`, `role`, and `stack_id`. It shows
+  `"source_sha":"<source-sha>"`, `"network":"regtest"`, `"role":"proof"`, and a
+  `stack_id` starting with `proof:`. No `ERROR`-level or panic lines follow it.
+- `GET /health/live` returns 200.
+- `GET /health/ready` returns 200 and passes this check on three probes a few
+  seconds apart:
+
+  ```bash
+  curl -fsS "https://<paykit-public-host>/health/ready" | jq -e '
+    .status == "ready" and .postgres == "ready"
+    and .paykit_delivery == "ready" and .outbox == "ready"
+    and .electrum.available == true and .electrum.genesis_ok == true
+    and (.stack_id | startswith("proof:"))
+    and .bitcoin_creation_enabled == true and .bitcoin_offer_available == true'
+  ```
+
+- The observer lease moved to the new process. A standby process also passes
+  `/health/ready`, so readiness alone does not prove leadership. Before step 2
+  and after step 4, run this read-only query against `paykit-postgres`:
+  `SELECT holder, lease_until > now(), fence FROM observer_leadership WHERE name = 'observer';`.
+  After the deploy the lease is live (`t`) and its `fence` is higher than
+  before the stop.
+
+A misconfigured seat fails these checks: a `production` role fails the `role`
+and `stack_id` checks, a network other than `regtest` fails the `network`
+check, `creation_enabled = false` fails `bitcoin_creation_enabled` and
+`bitcoin_offer_available`, and an Electrum endpoint on another chain fails
+`electrum.genesis_ok`.
 
 `locks-server` can also ship as an immutable image. The `Lock Server image`
 workflow builds `locks-server/` (base images pinned by digest) and publishes it
