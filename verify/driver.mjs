@@ -11,7 +11,8 @@
 //   identities                 - print creator/reader pubkys
 //   connect <state>            - full locks legacy-connect flow -> frontend session JSON
 //   setup-start <state>        - fetch paykit /setup, print { flow, authUrl }
-//   setup-claim <authUrl>      - print the companion claim JSON for paykit-companion-auth stdin
+//   setup-claim <authUrl> <tpub> - print the companion claim JSON for paykit-companion-auth stdin
+//                                (paykit-server binary; see verify/README.md)
 //   setup-poll <flow>          - poll POST /setup/<flow>/complete until 200
 //   reader-marker              - publish the reader's paykit receiver marker
 //   publish <sessionToken> <state> - lock-service-config + guarded upload + content lock
@@ -47,7 +48,7 @@ const { Keypair, Pubky, PublicKey } = require('@synonymdev/pubky');
 const LOCKS_URL = process.env.LOCKS_URL ?? 'https://locks-server-production.up.railway.app';
 const PAYKIT_URL = process.env.PAYKIT_URL ?? 'https://paykit-server-production.up.railway.app';
 // Must be one of the deployed servers' allowed origins (LOCKS_ALLOWED_RETURN_ORIGINS /
-// PAYKIT_SETUP_ALLOWED_ORIGINS); localhost was removed at the fiat-rails cutover.
+// Paykit's [setup] allowed_origins); localhost was removed at the fiat-rails cutover.
 const RETURN_ORIGIN = process.env.RETURN_ORIGIN ?? 'https://shop.pubky.app';
 const LOCKS_SEED_B64URL = process.env.LOCKS_SEED_B64URL; // seed only, no prefix
 const GUARDED_BODY = process.env.GUARDED_BODY ?? 'deployed rails guarded bytes';

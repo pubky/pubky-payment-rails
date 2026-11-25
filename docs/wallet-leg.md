@@ -106,13 +106,11 @@ because each is silently filtered at a different layer of Bitkit/paykit-rs:
    endpoints (`status=unsupportedEndpoint`). Fixed to publish
    `{"value": address}`.
 
-All three fixes live in
-`paykit-server/regtest-endpoint-identifier.patch`, applied fail-closed in
-`paykit-server/Dockerfile` (`git apply` + `grep` guards abort the build on
-drift). The demo reader asserted the server's own output rather than the
-spec (hard-required uppercase `"BTC"`, `btc-bitcoin-p2wpkh`, and a raw
-address payload), so server and reader could drift from the spec together
-and stay green (mirror-coupling / shared fixtures).
+All three fixes are part of paykit-server itself. The demo reader asserted
+the server's own output rather than the spec (hard-required uppercase
+`"BTC"`, `btc-bitcoin-p2wpkh`, and a raw address payload), so server and
+reader could drift from the spec together and stay green (mirror-coupling /
+shared fixtures).
 
 ### Deployment detail: Railway's builder was bypassed
 

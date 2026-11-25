@@ -21,6 +21,20 @@ Subcommands: gen, signup, identities, connect, setup-start, setup-claim,
 setup-poll, reader-marker, publish, negative, proof, status, lifecycle,
 credential, checkout.
 
+`setup-claim <authUrl> <tpub>` prints the JSON that `paykit-companion-auth`
+reads on stdin to approve a `/setup` flow in place of Bitkit. That helper is a
+paykit-server binary and is not in the published image. Build it from the
+paykit-server revision the deployed image was built from (recorded in that
+repository's `docs/operations/production-image.md`):
+
+```
+PAYKIT_SOURCE_SHA=<revision> cargo build --locked --release -p paykit-server --bin paykit-companion-auth
+```
+
+(the paykit-server build script requires `PAYKIT_SOURCE_SHA`), or use the
+paykit-server `Dockerfile.local` image, which ships it. The helper accepts
+only a `tpub` account key, so it serves the regtest stack only.
+
 ## Fiat locks (fiat-verifier gateway)
 
 `publish` takes `ASSET`/`AMOUNT` env overrides: `ASSET=USD AMOUNT=1999` authors
@@ -57,14 +71,15 @@ Note: canonical creator identifiers in Paykit/Locks request bodies are
 The upstream `paykit-reader-demo` (the Bitkit protocol role that receives the
 private Payment Request carrying the invoice address) is hardcoded to the
 local Pubky testnet, so it cannot talk to the deployed mainnet-network rails.
-`reader-mainnet/` builds the binary from the same pinned revisions as the
-deployed Paykit Server with one fail-closed patch: setting
+`reader-mainnet/` builds the binary from a pinned paykit-server revision: the
+source of the published Paykit Server image. Bump the pin together with the
+image. One fail-closed patch is applied: setting
 `PAYKIT_READER_PUBKY_TESTNET_HOST=mainnet` selects the Pubky SDK's default
 mainnet client (the identical construction paykit-server uses for
 `[paykit] network = "mainnet"`).
 
 ```
-docker build -t paykit-reader-mainnet:f38c7915 reader-mainnet/
+docker build -t paykit-reader-mainnet:aa53f664 reader-mainnet/
 
 # prepare (publishes the receiver marker with a real Noise key)
 printf '{"version":1,"operation":"prepare","reader_secret":"%s"}' "$(cat ids/reader.secret)" | \
@@ -74,7 +89,7 @@ docker run --rm -i -v "$PWD/reader-state:/reader-state" \
   -e PAYKIT_READER_RECEIVER_PATH=bitkit/server \
   -e PAYKIT_READER_SERVER_PATH=bitkit/server \
   -e PAYKIT_READER_SERVER_PUBKY=<creator-z32> \
-  paykit-reader-mainnet:f38c7915
+  paykit-reader-mainnet:aa53f664
 
 # receive (after the proof bundle triggers the invoice; same env, operation=receive)
 ```
