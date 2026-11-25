@@ -747,9 +747,12 @@ dump_source() {
 }
 
 check_dump_contents() {
+  local schema_listing
   local dumped_data_objects
   local expected_data_objects
-  if pg_restore --list "$scratch/schema.dump" |
+  schema_listing="$(pg_restore --list "$scratch/schema.dump")" ||
+    stop "could not inspect source schema dump" 1
+  if printf '%s\n' "$schema_listing" |
     awk '$4 == "BLOB" ||
          ($4 == "TABLE" && $5 == "DATA") ||
          ($4 == "SEQUENCE" && $5 == "SET") { found = 1 }
