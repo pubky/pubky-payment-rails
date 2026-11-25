@@ -365,17 +365,25 @@ starts.
    artifact (field `.digest`) and the 40-character source SHA from the image's
    `org.opencontainers.image.revision` label. Record the digest connected now
    as the rollback digest.
-2. Stop the running Paykit deployment. Wait until `GET /health/live` stops
+2. Run `scripts/rehearse-paykit-rail-migrations.sh` (the migration gate
+   below). Go on only when it exits 0 with `GATE: PROCEED`. Any other exit,
+   including an interrupted run, is a hard stop that leaves the running
+   process up.
+3. Stop the running Paykit deployment. Wait until `GET /health/live` stops
    answering 200 on three consecutive probes.
-3. Point the deployment platform's image source for the Paykit service at
+4. Point the deployment platform's image source for the Paykit service at
    `ghcr.io/bitcoinerrorlog/paykit-server@sha256:<new-digest>`. Wait until the
    new deployment reports success, and confirm it is the only running Paykit
    deployment.
-4. Run the post-checks below. If the new deployment does not start or a check
-   fails, point the image source back at the rollback digest. An image older
-   than the newest migration the database has applied does not start (the
-   migrator refuses applied migrations it does not know), so past that point
-   recovery is a forward fix.
+5. Run the post-checks below. If the new deployment does not start or a check
+   fails, and the candidate added no migration (the migration gate found its
+   set unchanged), point the image source back at the rollback digest. Once
+   the new image has applied a migration the rollback digest does not embed,
+   that digest refuses the database: startup applies every pending migration
+   before its other checks, the migrator runs with `ignore_missing: false`,
+   and the exact-set check rejects a ledger with versions the binary does not
+   know. Recovery is then a forward fix: publish and connect a new image that
+   keeps every applied migration.
 
 Post-checks; every one must pass:
 
@@ -397,17 +405,117 @@ Post-checks; every one must pass:
   ```
 
 - The observer lease moved to the new process. A standby process also passes
-  `/health/ready`, so readiness alone does not prove leadership. Before step 2
-  and after step 4, run this read-only query against `paykit-postgres`:
+  `/health/ready`, so readiness alone does not prove leadership. Before step 3
+  and after step 5, run this read-only query against `paykit-postgres`:
   `SELECT holder, lease_until > now(), fence FROM observer_leadership WHERE name = 'observer';`.
-  After the deploy the lease is live (`t`) and its `fence` is higher than
-  before the stop.
+  The `observer_leadership` table comes from migration 0026. On a fresh
+  install, or on a ledger that stops before 0026, there is no lease before
+  step 3 because the table does not exist yet, so only the after-deploy query
+  applies. After the deploy the lease must be live (`t`). When a lease existed
+  before the stop, its `fence` must also be higher than before.
 
 A misconfigured seat fails these checks: a `production` role fails the `role`
 and `stack_id` checks, a network other than `regtest` fails the `network`
 check, `creation_enabled = false` fails `bitcoin_creation_enabled` and
 `bitcoin_offer_available`, and an Electrum endpoint on another chain fails
 `electrum.genesis_ok`.
+
+#### Migration gate
+
+Startup applies every pending migration first and only then verifies the
+exact migration set, the adopted deployment invariants, the master key, and
+the persisted Creator and payment records. A candidate that adds a migration
+can therefore advance the ledger and still fail to start, and after that the
+rollback digest no longer starts either. Run this gate in step 2, before the
+running process is stopped.
+
+Run it with the new image digest, its source SHA, a local paykit-server clone,
+and a copy of the rail's TOML file:
+
+```bash
+# Optional role and client settings, exported before the command:
+# export PAYKIT_MIGRATOR_ROLE=<migrator-role>
+# export PAYKIT_RUNTIME_ROLE=<runtime-role>
+# export PAYKIT_PG_CLIENT_BIN=<postgresql-client-directory>
+PAYKIT_CANDIDATE_DIGEST=sha256:<new-digest> \
+PAYKIT_SOURCE_SHA=<source-sha> \
+PAYKIT_SERVER_REPO=<path-to-paykit-server-clone> \
+PAYKIT_RAIL_CONFIG=<copy-of-rail-TOML> \
+RAILWAY_PROJECT_ID=<project-id> \
+RAILWAY_ENVIRONMENT=<environment-id> \
+RAILWAY_DATABASE_SERVICE=paykit-postgres \
+scripts/rehearse-paykit-rail-migrations.sh
+```
+
+`PAYKIT_MIGRATOR_ROLE` and `PAYKIT_RUNTIME_ROLE` optionally name the roles in
+the rail's two database URLs. The runtime role defaults to the migrator role,
+which defaults to `postgres`. `PAYKIT_PG_CLIENT_BIN` optionally names the
+PostgreSQL client directory. The clone image, candidate platform, start
+timeout, observation window, and evidence directory also have optional
+`PAYKIT_REHEARSAL_*` inputs documented in the script header.
+
+The script needs Docker with a reachable daemon, Git, Python 3.11 or newer,
+OpenSSL, `pgrep`, the Railway CLI, and `psql`, `pg_dump`, `pg_dumpall`, and
+`pg_restore`. The dump client and clone must have the source database's
+PostgreSQL major version.
+
+The live ledger determines the outcome:
+
+| Live ledger | Outcome |
+|---|---|
+| Table absent and the database holds no relations | `GATE: PROCEED (fresh install, no rehearsal needed)` |
+| Table absent but the database holds other relations | Stop. It is not a fresh install, so the target is wrong or the ledger was lost. |
+| A `_sqlx_migrations` table exists outside the `public` schema | Stop. The ledger is not where the service reads it. |
+| Any row has `success = f` | Stop. No image starts on this ledger. |
+| A version is absent from the candidate | Stop. The candidate is older than the database. |
+| An applied checksum differs from the candidate file | Stop. The applied migration changed. |
+| Versions and checksums equal the candidate | `GATE: PROCEED (migration set unchanged, no rehearsal needed)` |
+| The candidate adds versions, including to an empty ledger | Rehearse. The script lists the new migration file names. |
+
+When a rehearsal is needed, the script makes a schema-only dump plus the
+migration ledger and the rows of `deployment_metadata` and `stack_identity`,
+each copied when its own table exists (migration 0001 creates the first and
+migration 0011 the second, so a ledger that stops at 0001 still copies
+`deployment_metadata`). It restores them into
+a disposable PostgreSQL container on an internal Docker network with no other
+reachable host. The candidate runs with the rail's TOML, with only the
+listener, Electrum endpoint, auth relay, and drain timeout overridden, and a
+throwaway master key. A config-only preflight runs first without network
+access. The script never writes to `paykit-postgres`, never uses the rail's
+master key, and never copies Creator or payment rows. It clears inherited
+`PG*` environment variables, so its own credential file and explicit
+connection flags are the only source of connection settings.
+
+A rehearsal passes only when all of these hold:
+
+- The candidate reports the expected source SHA, network, role, and stack
+  identity within the start timeout.
+- The first `/health/live` probe returns 200 with exactly
+  `{"status":"live"}`.
+- The candidate stays running through the observation window and passes a
+  second liveness probe.
+- A graceful stop leaves exit code 0 and no out-of-memory kill.
+- Every log line is a JSON object, with no `ERROR` level, `Error:` line, or
+  panic.
+- The clone ledger exactly equals the candidate migration set, with every row
+  successful.
+
+The rehearsal does not prove data-dependent migration behavior, a correct
+live master key, or the record integrity scans against live rows. Those checks
+run at real startup after step 3. Read every new migration file the script
+lists before the stop. Once a new migration has applied, recovery is
+forward-only as step 5 says. It also does not test role grants beyond those
+startup exercises. When both URLs use `postgres`, it does not test restricted
+privileges. It does not test network-dependent readiness, an exact clone minor
+version or extension match, or the rail values of the four overridden TOML
+keys. The post-checks cover network readiness. A missing clone extension fails
+the restore and stops the gate. The candidate compares the rail's TOML with
+the copied `deployment_metadata` row at startup, so a mismatching network,
+receiver path, or Lock Server key fails the rehearsal. All other rail TOML
+values are covered by the config preflight and candidate startup.
+
+A failed or incomplete rehearsal is a hard stop that leaves the running
+process up. Fix the candidate and run the gate again.
 
 `locks-server` can also ship as an immutable image. The `Lock Server image`
 workflow builds `locks-server/` (base images pinned by digest) and publishes it
