@@ -481,7 +481,10 @@ a disposable PostgreSQL container on an internal Docker network with no other
 reachable host. The candidate runs with the rail's TOML, with only the
 listener, Electrum endpoint, auth relay, and drain timeout overridden, and a
 throwaway master key. A config-only preflight runs on `PAYKIT_RAIL_CONFIG`
-before overrides are applied and without network access. The disposable
+before overrides are applied and without network access. It copies the file
+into the mode-0700 scratch directory with `cp -L`, sets mode 0644, and only
+then copies it into the config-check container so a host mode 0600 file or a
+symlink to one does not fail inside the image. The disposable
 clone container is removed with its anonymous data volume when the gate
 exits. The script never writes to `paykit-postgres`, never uses the rail's
 master key, and never copies Creator or payment rows: it stops when either

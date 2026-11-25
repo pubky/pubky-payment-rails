@@ -449,7 +449,11 @@ check_candidate_config() {
     stop "could not create candidate config container" 1
   fi
   candidate_created=true
-  if ! docker cp "$PAYKIT_RAIL_CONFIG" "$candidate_name:/home/paykit/rail.toml" >/dev/null 2>&1; then
+  if ! cp -L -- "$PAYKIT_RAIL_CONFIG" "$scratch/rail.toml"; then
+    stop "could not stage rail config for the config check" 1
+  fi
+  chmod 0644 "$scratch/rail.toml" || stop "could not set staged rail config mode" 1
+  if ! docker cp "$scratch/rail.toml" "$candidate_name:/home/paykit/rail.toml" >/dev/null 2>&1; then
     stop "could not copy rail config" 1
   fi
   if docker start -a "$candidate_name" >"$scratch/config-check.log" 2>&1; then
