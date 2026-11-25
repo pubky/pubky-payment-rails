@@ -74,7 +74,7 @@ cleanup() {
     docker rm -f "$candidate_name" >/dev/null 2>&1 || true
   fi
   if [[ "$clone_created" == true && -n "$clone_name" ]] && command -v docker >/dev/null 2>&1; then
-    docker rm -f "$clone_name" >/dev/null 2>&1 || true
+    docker rm -fv "$clone_name" >/dev/null 2>&1 || true
   fi
   if [[ "$network_created" == true && -n "$network_name" ]] && command -v docker >/dev/null 2>&1; then
     docker network rm "$network_name" >/dev/null 2>&1 || true
@@ -433,7 +433,7 @@ PY
 check_candidate_config() {
   local platform=${PAYKIT_REHEARSAL_PLATFORM:-linux/amd64}
   local check_exit
-  progress "checking candidate configuration without network access"
+  progress "checking rail configuration without network access"
   throwaway_master_key=$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=\n') || stop "could not generate throwaway master key" 2
   if [[ ! "$throwaway_master_key" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
     stop "throwaway master key has an invalid form" 2
@@ -443,14 +443,14 @@ check_candidate_config() {
     PAYKIT_MASTER_KEY="$throwaway_master_key" \
     docker create --platform "$platform" --network none --name "$candidate_name" \
       --label "paykit-rail-rehearsal=$random_id" \
-      -e PAYKIT_CONFIG=/home/paykit/rehearsal.toml \
+      -e PAYKIT_CONFIG=/home/paykit/rail.toml \
       -e PAYKIT_MIGRATOR_DATABASE_URL -e PAYKIT_DATABASE_URL -e PAYKIT_MASTER_KEY \
-      "$candidate_image" --check-config /home/paykit/rehearsal.toml >/dev/null 2>&1; then
+      "$candidate_image" --check-config /home/paykit/rail.toml >/dev/null 2>&1; then
     stop "could not create candidate config container" 1
   fi
   candidate_created=true
-  if ! docker cp "$scratch/rehearsal.toml" "$candidate_name:/home/paykit/rehearsal.toml" >/dev/null 2>&1; then
-    stop "could not copy candidate config" 1
+  if ! docker cp "$PAYKIT_RAIL_CONFIG" "$candidate_name:/home/paykit/rail.toml" >/dev/null 2>&1; then
+    stop "could not copy rail config" 1
   fi
   if docker start -a "$candidate_name" >"$scratch/config-check.log" 2>&1; then
     check_exit=0
